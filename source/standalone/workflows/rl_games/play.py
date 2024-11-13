@@ -58,6 +58,12 @@ import omni.isaac.lab_tasks  # noqa: F401
 from omni.isaac.lab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
 from omni.isaac.lab_tasks.utils.wrappers.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
+def list2str(input):
+    s="["
+    for i in input:
+        s+=str(i)+","
+    s+="]"
+    return s
 
 def main():
     """Play with RL-Games agent."""
@@ -149,6 +155,15 @@ def main():
     # note: We simplified the logic in rl-games player.py (:func:`BasePlayer.run()`) function in an
     #   attempt to have complete control over environment stepping. However, this removes other
     #   operations such as masking that is used for multi-agent learning by RL-Games.
+    print("-------------------------------")
+    print(type(env.env.scene),type(agent.env.env))
+    print("-------------------------------")
+    from omni.isaac.core.objects import cuboid, sphere
+    import numpy as np
+    from pxr import UsdShade, Gf, UsdGeom, Usd
+    from omni.isaac.core.simulation_context import SimulationContext
+
+    spheres=None
     while simulation_app.is_running():
         # run everything in inference mode
         with torch.inference_mode():
@@ -165,11 +180,89 @@ def main():
                 if agent.is_rnn and agent.states is not None:
                     for s in agent.states:
                         s[:, dones, :] = 0.0
+
+            print("-------------------------------")
+            #print(env.env.scene["contact_sensors_hand"].data)
+            sph_list = env.env.scene["contact_sensors_hand"].data.pos_w.cpu().numpy()
+            force = torch.norm(env.env.scene["contact_sensors_hand"].data.net_forces_w,dim=-1)[0].cpu().numpy()
+            force_sum = env.env.scene["contact_sensors_hand"].data.net_forces_w[0]
+            
+            force_sum = -torch.sum(force_sum,dim=0).cpu().numpy()
+            wrist_pos = env.env.scene["contact_sensors_wrist"].data.pos_w.cpu().numpy()
+            wrist_quat = env.env.scene["contact_sensors_wrist"].data.quat_w.cpu().numpy()
+            obj_pos_quat = obs[0,48:55].cpu().numpy() # type: ignore
+
+            cube_pos = list(env.env.scene["contact_sensors_cube"].data.pos_w.cpu().numpy()[0,0])
+            cube_quat = list(env.env.scene["contact_sensors_cube"].data.quat_w.cpu().numpy()[0,0])
+            cube_force = env.env.scene["contact_sensors_cube"].data.net_forces_w.cpu().numpy()[0,0]
+
+        # wrist = env.env.scene.stage.GetPrimAtPath("/World/envs/env_0/Robot/robot0_wrist")
+        # cube = env.env.scene.stage.GetPrimAtPath("/World/envs/env_0/object")
+        # xformable = UsdGeom.Xformable(cube)
+        # transform_matrix = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        # world_translation = transform_matrix.ExtractTranslation()
+        # world_rotation = transform_matrix.ExtractRotationQuat()
+        s="["
+        for i in wrist_pos[0,0]:
+            s+=str(i)+","
+        for i in wrist_quat[0,0]:
+            s+=str(i)+","
+        s+="]"
+        print(f"wrist_data={s}")
+
+        #print(f"cube_data={list2str(obj_pos_quat)}")
+
+        #print(f"force={list2str(force)}")
+        #print(f"force_sum={list2str(force_sum)}")
+
+        print(f"cube_pos={list2str(cube_pos+cube_quat)}")
+        print(f"cube_force={list2str(cube_force)}")
+
+        print(f"dt={SimulationContext.instance().get_physics_dt()}")
+
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
+        #print(force)
+        if spheres is None:
+            spheres = []
+            # create spheres:
+
+            for si, pos in enumerate(sph_list[0]):
+                if force[si]>0.0:
+                    sp = sphere.VisualSphere(
+                        prim_path="/World/robot_sphere_" + str(si),
+                        position=np.ravel(pos),
+                        radius=float(0.01),
+                        color=np.array([0, 0.8, 0.2]),
+                    )
+                else:
+                    sp = sphere.VisualSphere(
+                        prim_path="/World/robot_sphere_" + str(si),
+                        position=np.ravel(pos),
+                        radius=float(0.01),
+                        color=np.array([0.8, 0.2, 0.0]),
+                    )
+                spheres.append(sp)
+        else:
+            for si, pos in enumerate(sph_list[0]):
+                if si is not 0:
+                    shader_path = "/World/Looks/visual_material_" + str(si)+"/shader"
+                else:
+                    shader_path = "/World/Looks/visual_material/shader"
+                shader = UsdShade.Shader.Get(env.env.scene.stage,shader_path)
+                if force[si]>0.0:
+                    shader.GetInput("diffuseColor").Set(Gf.Vec3f(1.0, 0.0, 0.0))
+                else:
+                    shader.GetInput("diffuseColor").Set(Gf.Vec3f(0.2, 0.2, 0.2))        
+                #env.env.scene.stage.RemovePrim(shader_path)
+
+                spheres[si].set_world_pose(position=np.ravel(pos))
+        
+
+
 
     # close the simulator
     env.close()
